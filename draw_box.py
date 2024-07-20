@@ -132,9 +132,20 @@ class ImageAnnotator(QMainWindow):
         pos = event.pos() - self.image_label.pos()
         
         if self.draw_mode and event.button() == Qt.LeftButton:
-            self.drawing = True
-            self.start_point = pos
-            self.end_point = pos
+            # Check if we clicked inside an existing box
+            for i, box in enumerate(self.boxes):
+                if QRect(box[0], box[1]).contains(pos):
+                    self.selected_box = i
+                    self.resize_handle = self.get_resize_handle(pos, box)
+                    if not self.resize_handle:
+                        self.move_start = pos
+                    self.drawing = False
+                    break
+            else:  # If we didn't click inside any existing box
+                self.drawing = True
+                self.start_point = pos
+                self.end_point = pos
+                self.selected_box = None
         elif self.edit_mode and event.button() == Qt.LeftButton:
             self.selected_box = None
             for i, box in enumerate(self.boxes):
@@ -155,7 +166,7 @@ class ImageAnnotator(QMainWindow):
         
         if self.drawing:
             self.end_point = pos
-        elif self.edit_mode and self.selected_box is not None:
+        elif (self.edit_mode or self.draw_mode) and self.selected_box is not None:
             box = list(self.boxes[self.selected_box])
             if self.resize_handle:
                 if 'top' in self.resize_handle:
@@ -179,33 +190,40 @@ class ImageAnnotator(QMainWindow):
         if self.drawing:
             self.drawing = False
             self.boxes.append((self.start_point, self.end_point))
+            self.selected_box = len(self.boxes) - 1
         self.move_start = None
         self.resize_handle = None
         self.update_image()
         self.update_edit_box()
 
     def get_resize_handle(self, pos, box):
-        handle_size = 6
+        handle_size = 10  # Increased from 6 to 10
         rect = QRect(box[0], box[1])
-        if abs(pos.x() - rect.left()) < handle_size:
-            if abs(pos.y() - rect.top()) < handle_size:
-                return 'topleft'
-            elif abs(pos.y() - rect.bottom()) < handle_size:
-                return 'bottomleft'
-            elif rect.top() < pos.y() < rect.bottom():
-                return 'left'
-        elif abs(pos.x() - rect.right()) < handle_size:
-            if abs(pos.y() - rect.top()) < handle_size:
-                return 'topright'
-            elif abs(pos.y() - rect.bottom()) < handle_size:
-                return 'bottomright'
-            elif rect.top() < pos.y() < rect.bottom():
-                return 'right'
-        elif rect.left() < pos.x() < rect.right():
-            if abs(pos.y() - rect.top()) < handle_size:
-                return 'top'
-            elif abs(pos.y() - rect.bottom()) < handle_size:
-                return 'bottom'
+        
+        # Helper function to check if position is within handle area
+        def is_near(value, target):
+            return abs(value - target) < handle_size
+
+        # Check corners first (they take priority over edges)
+        if is_near(pos.x(), rect.left()) and is_near(pos.y(), rect.top()):
+            return 'topleft'
+        if is_near(pos.x(), rect.right()) and is_near(pos.y(), rect.top()):
+            return 'topright'
+        if is_near(pos.x(), rect.left()) and is_near(pos.y(), rect.bottom()):
+            return 'bottomleft'
+        if is_near(pos.x(), rect.right()) and is_near(pos.y(), rect.bottom()):
+            return 'bottomright'
+
+        # Then check edges
+        if is_near(pos.x(), rect.left()) and rect.top() < pos.y() < rect.bottom():
+            return 'left'
+        if is_near(pos.x(), rect.right()) and rect.top() < pos.y() < rect.bottom():
+            return 'right'
+        if is_near(pos.y(), rect.top()) and rect.left() < pos.x() < rect.right():
+            return 'top'
+        if is_near(pos.y(), rect.bottom()) and rect.left() < pos.x() < rect.right():
+            return 'bottom'
+
         return None
 
     def update_image(self):
@@ -276,42 +294,28 @@ class ImageAnnotator(QMainWindow):
         image_dir = os.path.dirname(self.image_path)
         image_filename = os.path.splitext(os.path.basename(self.image_path))[0]
         
-        # Create the XML filename
-        xml_filename = f"{image_filename}.xml"
-        xml_path = os.path.join(image_dir, xml_filename)
+        # Create the text filename
+        txt_filename = f"{image_filename}.txt"
+        txt_path = os.path.join(image_dir, txt_filename)
 
-        root = ET.Element("annotation")
+        with open(txt_path, 'w') as f:
+            for i, box in enumerate(self.boxes):
+                # Calculate middle point, width, and height
+                x_min = min(box[0].x(), box[1].x())
+                y_min = min(box[0].y(), box[1].y())
+                x_max = max(box[0].x(), box[1].x())
+                y_max = max(box[0].y(), box[1].y())
+                
+                mid_x = (x_min + x_max) / 2
+                mid_y = (y_min + y_max) / 2
+                width = x_max - x_min
+                height = y_max - y_min
 
-        filename = ET.SubElement(root, "filename")
-        filename.text = os.path.basename(self.image_path)
+                # Write to file in the specified format
+                f.write(f"object_{i+1},{mid_x},{mid_y},{width},{height}\n")
 
-        size = ET.SubElement(root, "size")
-        width = ET.SubElement(size, "width")
-        height = ET.SubElement(size, "height")
-        pixmap = self.current_pixmap
-        width.text = str(pixmap.width())
-        height.text = str(pixmap.height())
+        QMessageBox.information(self, "Save Annotations", f"Annotations saved to {txt_path}")
 
-        for i, box in enumerate(self.boxes):
-            object_elem = ET.SubElement(root, "object")
-            name = ET.SubElement(object_elem, "name")
-            name.text = f"object_{i+1}"
-
-            bndbox = ET.SubElement(object_elem, "bndbox")
-            xmin = ET.SubElement(bndbox, "xmin")
-            ymin = ET.SubElement(bndbox, "ymin")
-            xmax = ET.SubElement(bndbox, "xmax")
-            ymax = ET.SubElement(bndbox, "ymax")
-
-            xmin.text = str(min(box[0].x(), box[1].x()))
-            ymin.text = str(min(box[0].y(), box[1].y()))
-            xmax.text = str(max(box[0].x(), box[1].x()))
-            ymax.text = str(max(box[0].y(), box[1].y()))
-
-        tree = ET.ElementTree(root)
-        tree.write(xml_path)
-
-        QMessageBox.information(self, "Save Annotations", f"Annotations saved to {xml_path}")
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     ex = ImageAnnotator()
